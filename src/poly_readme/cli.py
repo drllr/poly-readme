@@ -9,6 +9,47 @@ import json
 import yaml
 from pathlib import Path
 import keyring
+import time
+import threading
+import itertools
+
+LANGUAGES = {
+    "ko": "Korean",
+    "ja": "Japanese",
+    "zh": "Chinese Simplified", 
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "ar": "Arabic",
+    "vi": "Vietnamese"
+}
+
+class Spinner:
+    def __init__(self, message=""):
+        self.spinner = itertools.cycle(['-', '/', '|', '\\'])
+        self.running = False
+        self.message = message
+        self.thread = None
+
+    def spin(self):
+        while self.running:
+            sys.stdout.write(f"\r{self.message} {next(self.spinner)}")
+            sys.stdout.flush()
+            time.sleep(0.1)
+        sys.stdout.write('\r\033[K')  # Clear line
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self.spin)
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join()
 
 def get_config_dir():
     return Path.home() / '.config' / 'poly-readme'
@@ -31,8 +72,20 @@ def save_config(config):
         json.dump(config, f)
 
 def setup_api_key():
+    # Check if API key already exists
+    existing_key = keyring.get_password("poly-readme", "openai_api_key")
+    if existing_key:
+        should_update = questionary.confirm(
+            "API key already exists. Do you want to update it?",
+            default=False
+        ).ask()
+        
+        if not should_update:
+            print("Keeping existing API key.")
+            return existing_key
+
+    # Get new API key
     api_key = questionary.password("Please enter your OpenAI API key:").ask()
-    # Store API key in system keyring instead of config file
     keyring.set_password("poly-readme", "openai_api_key", api_key)
     return api_key
 
@@ -44,112 +97,123 @@ def get_api_key():
         
     # Then try system keyring
     api_key = keyring.get_password("poly-readme", "openai_api_key")
-    if api_key:
-        return api_key
-        
-    # If no API key found, prompt for setup
-    print("OpenAI API key not found. Please set it up.")
-    return setup_api_key()
+    if not api_key:
+        print("OpenAI API key not found. Please run 'poly-readme install' first.")
+        sys.exit(1)
+    return api_key
 
 def setup_project():
-    LANGUAGES = {
-        "ko": "Korean",
-        "ja": "Japanese",
-        "zh": "Chinese Simplified", 
-        "es": "Spanish",
-        "fr": "French",
-        "de": "German",
-        "it": "Italian",
-        "pt": "Portuguese",
-        "ru": "Russian",
-        "ar": "Arabic",
-        "vi": "Vietnamese"
-    }
-    
-    LANGUAGE_CHOICES = [
-        questionary.Choice(f"{name} ({code})", code)
-        for code, name in LANGUAGES.items()
-    ]
-    LANGUAGE_CHOICES.append(questionary.Choice("Custom language", "custom"))
+    try:
+        # Load existing settings
+        existing_config = {}
+        try:
+            with open('.polyreadme.yaml', 'r') as f:
+                existing_config = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            pass
+        
+        # Initialize config dictionary
+        config = {
+            'source_file': existing_config.get('source_file', 'README.md'),
+            'target_languages': [],
+            'output_pattern': existing_config.get('output_pattern', 'README_{lang}.md')
+        }
+        
+        # Set default for previously selected languages
+        existing_languages = existing_config.get('target_languages', [])
+        
+        # Create choice objects with checked parameter for existing languages
+        LANGUAGE_CHOICES = [
+            questionary.Choice(
+                f"{name} ({code})", 
+                code,
+                checked=(code in existing_languages)  # Add checked parameter here
+            )
+            for code, name in LANGUAGES.items()
+        ]
+        LANGUAGE_CHOICES.append(questionary.Choice("Custom language", "custom"))
 
-    config = {
-        'source_file': questionary.text(
-            "Enter source README file path (e.g., docs/README.md):",
-            default="README.md"
-        ).ask(),
-        'target_languages': []
-    }
+        selected_languages = questionary.checkbox(
+            "Select target languages for translation:",
+            choices=LANGUAGE_CHOICES
+        ).ask()
 
-    # Get target languages
-    selected_languages = questionary.checkbox(
-        "Select target languages for translation:",
-        choices=LANGUAGE_CHOICES
-    ).ask()
+        if selected_languages is None:
+            print("\nSetup cancelled.")
+            return
 
-    # Handle custom language input if selected
-    if "custom" in selected_languages:
-        selected_languages.remove("custom")
-        while True:
-            custom_code = questionary.text(
-                "Enter custom language code (e.g., vi for Vietnamese):"
-            ).ask().lower()
-            
-            if not custom_code:
-                print("Language code cannot be empty")
-                continue
+        # Handle custom language input if selected
+        if "custom" in selected_languages:
+            selected_languages.remove("custom")
+            while True:
+                custom_code = questionary.text(
+                    "Enter custom language code (e.g., vi for Vietnamese):"
+                ).ask().lower()
+                
+                if not custom_code:
+                    print("Language code cannot be empty")
+                    continue
 
-            # Validate language code format (typically 2-3 characters)
-            if not (2 <= len(custom_code) <= 3 and custom_code.isalpha()):
-                print("Language code must be 2-3 letters")
-                continue
+                if not (2 <= len(custom_code) <= 3 and custom_code.isalpha()):
+                    print("Language code must be 2-3 letters")
+                    continue
 
-            selected_languages.append(custom_code)
-            break
+                selected_languages.append(custom_code)
+                break
 
-    config['target_languages'] = selected_languages
+        config['target_languages'] = selected_languages
 
-    # Ask for output pattern with validation
-    while True:
-        pattern_type = questionary.select(
+        # Select output pattern (set default if existing value)
+        existing_pattern = existing_config.get('output_pattern', "README_{lang}.md")
+        pattern_choices = [
+            questionary.Choice("README_{lang}.md (lowercase)", "README_{lang}.md"),
+            questionary.Choice("README_{LANG}.md (uppercase)", "README_{LANG}.md"),
+            questionary.Choice("Custom pattern", "custom")
+        ]
+        
+        # Handle custom if existing pattern is not default
+        default_pattern = next(
+            (choice.value for choice in pattern_choices if choice.value == existing_pattern),
+            "custom"
+        )
+        
+        pattern_choice = questionary.select(
             "Choose output filename pattern type:",
-            choices=[
-                "README_{lang}.md (lowercase) [default]",
-                "README_{LANG}.md (uppercase)", 
-                "Custom pattern"
-            ],
-            default=0  # Set default to lowercase option
+            choices=pattern_choices,
+            default=default_pattern
         ).ask()
         
-        if pattern_type == "README_{lang}.md (lowercase)":
-            config['output_pattern'] = "README_{lang}.md"
-            break
-        elif pattern_type == "README_{LANG}.md (uppercase)":
-            config['output_pattern'] = "README_{LANG}.md"
-            break
+        if pattern_choice == "custom":
+            while True:
+                pattern = questionary.text(
+                    "Enter custom pattern (must include {lang} or {LANG}):",
+                    default=existing_pattern if default_pattern == "custom" else None
+                ).ask()
+                
+                if "{lang}" not in pattern and "{LANG}" not in pattern:
+                    print("Error: Pattern must include either {lang} or {LANG}")
+                    continue
+                    
+                if pattern.count("{lang}") + pattern.count("{LANG}") > 1:
+                    print("Error: Pattern should include language placeholder only once")
+                    continue
+                    
+                if not pattern.endswith(".md"):
+                    print("Error: Pattern must end with .md extension")
+                    continue
+                    
+                config['output_pattern'] = pattern
+                break
         else:
-            pattern = questionary.text(
-                "Enter custom pattern (must include {lang} or {LANG}):"
-            ).ask()
-            
-            # Validate pattern
-            if "{lang}" not in pattern and "{LANG}" not in pattern:
-                print("Error: Pattern must include either {lang} or {LANG}")
-                continue
-                
-            if pattern.count("{lang}") + pattern.count("{LANG}") > 1:
-                print("Error: Pattern should include language placeholder only once")
-                continue
-                
-            if not pattern.endswith(".md"):
-                print("Error: Pattern must end with .md extension")
-                continue
-                
-            config['output_pattern'] = pattern
-            break
-    
-    with open('.polyreadme.yaml', 'w') as f:
-        yaml.dump(config, f)
-    print("Project configuration saved to .polyreadme.yaml")
+            config['output_pattern'] = pattern_choice
+        
+        with open('.polyreadme.yaml', 'w') as f:
+            yaml.dump(config, f)
+        print("Project configuration saved to .polyreadme.yaml")
+
+    except KeyboardInterrupt:
+        print("\nSetup cancelled.")
+        return
 
 def load_project_config():
     try:
@@ -159,24 +223,9 @@ def load_project_config():
         print("Error: Project configuration not found. Please run 'poly-readme setup' first.")
         sys.exit(1)
 
-def translate_readme():
-    LANGUAGES = {
-        "ko": "Korean",
-        "ja": "Japanese",
-        "zh": "Chinese Simplified",
-        "es": "Spanish",
-        "fr": "French",
-        "de": "German",
-        "it": "Italian",
-        "pt": "Portuguese",
-        "ru": "Russian",
-        "ar": "Arabic"
-    }
-    
-    # Load project configuration
+def translate_readme(): 
     config = load_project_config()
     
-    # Read source README
     try:
         with open(config['source_file'], 'r', encoding='utf-8') as f:
             content = f.read()
@@ -184,73 +233,69 @@ def translate_readme():
         print(f"Could not find source file: {config['source_file']}")
         sys.exit(1)
 
-    # Set OpenAI API key
     openai.api_key = get_api_key()
-    if not openai.api_key:
-        print("Failed to set up OpenAI API key.")
-        sys.exit(1)
         
-    # Translate for each target language
     for lang in config['target_languages']:
-        print(f"Translating {config['source_file']} to {LANGUAGES[lang]}...")
+        spinner = Spinner(f"Translating {config['source_file']} to {LANGUAGES[lang]}")
+        spinner.start()
+        
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
+            response = openai.chat.completions.create(
+                model="gpt-4o",
                 messages=[
-                    {
-                        "role": "system", 
-                        "content": f"You are a professional translator specializing in translating technical documentation from English to {LANGUAGES[lang]}. Please maintain the original Markdown formatting and ensure technical terms are accurately translated."
-                    },
+                    {"role": "system", "content": f"You are a professional translator specializing in translating technical documentation from English to {LANGUAGES[lang]}. Please maintain the original Markdown formatting and ensure technical terms are accurately translated."},
                     {"role": "user", "content": content}
-                ]
+                ],
             )
-            translated_content = response['choices'][0]['message']['content']
-        except Exception as e:
-            print(f"An error occurred during translation to {LANGUAGES[lang]}: {e}")
-            continue
-
-        # Save translated content
-        output_pattern = config['output_pattern']
-        if '{LANG}' in output_pattern:
-            output_filename = output_pattern.replace('{LANG}', lang.upper())
-        else:
-            output_filename = output_pattern.replace('{lang}', lang.lower())
+            translated_content = response.choices[0].message.content
             
-        with open(output_filename, 'w', encoding='utf-8') as f:
-            f.write(translated_content)
-        print(f"Translation completed. {output_filename} has been created.")
+            output_pattern = config['output_pattern']
+            if '{LANG}' in output_pattern:
+                output_filename = output_pattern.replace('{LANG}', lang.upper())
+            else:
+                output_filename = output_pattern.replace('{lang}', lang.lower())
+                
+            with open(output_filename, 'w', encoding='utf-8') as f:
+                f.write(translated_content)
+            
+            spinner.stop()
+            print(f"\r✓ Translation completed. {output_filename} has been created.")
+            
+        except Exception as e:
+            spinner.stop()
+            print(f"\r✗ An error occurred during translation to {LANGUAGES[lang]}: {str(e)}")
 
 def main():
-    # 최상위 명령어를 위한 파서 생성
+    # Create parser for top-level commands
     parser = argparse.ArgumentParser(
         description='Poly-README - Translate README files into multiple languages.',
         usage='poly-readme <command> [<args>]',
-        add_help=False  # 기본 도움말 비활성화
+        add_help=False  # Disable default help
     )
     parser.add_argument('-h', '--help', action='store_true', help='Show this help message and exit.')
 
-    # 서브 명령어를 관리하는 파서 생성
+    # Create parser for managing subcommands
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
-    # install 서브 명령어
+    # install subcommand
     parser_install = subparsers.add_parser(
         'install',
         help='Configure OpenAI API key'
     )
 
-    # setup 서브 명령어
+    # setup subcommand
     parser_setup = subparsers.add_parser(
         'setup',
         help='Configure project settings'
     )
 
-    # translate 서브 명령어
+    # translate subcommand
     parser_translate = subparsers.add_parser(
         'translate',
         help='Translate README files'
     )
 
-    # help 서브 명령어
+    # help subcommand
     parser_help = subparsers.add_parser(
         'help',
         help='Show help for a specific command'
@@ -262,10 +307,10 @@ def main():
         help='Command to get help for'
     )
 
-    # 명령어 파싱
+    # Parse commands
     args = parser.parse_args()
 
-    # -h 또는 --help가 입력된 경우
+    # If -h or --help is provided
     if args.help or args.command is None:
         print("poly-readme 0.1.0")
         print("Usage: poly-readme <command> [<args>]")
@@ -276,7 +321,7 @@ def main():
         print("\nSee 'poly-readme help <command>' for information on a specific command.")
         sys.exit(0)
 
-    # 명령어 처리
+    # Command processing
     if args.command == 'help':
         if not hasattr(args, 'topic') or args.topic is None:
             print("Usage: poly-readme <command> [<args>]")

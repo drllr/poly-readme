@@ -1,6 +1,6 @@
 # Poly-README
 
-Poly-README is a command-line tool that automatically translates your README.md files into multiple languages using OpenAI's GPT-3.5-turbo model.
+Poly-README is a command-line tool that automatically translates your README.md files into multiple languages using OpenAI's GPT-4 model.
 
 ## Features
 
@@ -8,7 +8,11 @@ Poly-README is a command-line tool that automatically translates your README.md 
 - Support for multiple target languages
 - Simple command-line interface
 - Maintains markdown formatting
-- Uses OpenAI's GPT-3.5-turbo for high-quality translations
+- Uses OpenAI's GPT-4 for high-quality translations
+- Secure API key management using system keyring
+- Project-level configuration using YAML
+- Progress indicator during translation
+- Support for custom output filename patterns
 
 ## Installation
 
@@ -21,38 +25,62 @@ pip install poly-readme
 Before using Poly-README, you need to:
 
 1. Have an OpenAI API key
-2. Set your OpenAI API key as an environment variable:
-
-```bash
-export OPENAI_API_KEY='your-api-key-here'
-```
+2. Either:
+   - Set your OpenAI API key as an environment variable:
+     ```bash
+     export OPENAI_API_KEY='your-api-key-here'
+     ```
+   - Or install it securely using the CLI:
+     ```bash
+     poly-readme install
+     ```
 
 ## Usage
 
-Basic usage to translate your README.md:
+### Initial Setup
+
+Configure your project settings:
 
 ```bash
-poly-readme translate --lang ko  # Translates to Korean
+poly-readme setup
 ```
 
-Available language codes:
+This will guide you through:
+
+- Setting the source README file location
+- Selecting target languages for translation
+- Configuring output filename pattern
+
+### Translation
+
+Translate your README according to your project configuration:
+
+```bash
+poly-readme translate
+```
+
+### Available Language Codes
 
 - `ko`: Korean
 - `ja`: Japanese
-- `zh`: Chinese
-- And more...
+- `zh`: Chinese Simplified
+- `es`: Spanish
+- `fr`: French
+- `de`: German
+- `it`: Italian
+- `pt`: Portuguese
+- `ru`: Russian
+- `ar`: Arabic
+- `vi`: Vietnamese
 
-The translated file will be saved as `README_{LANG}.md` in your current directory.
+The translated files will be saved according to your configured pattern (default: `README_{lang}.md`).
 
-## Example
+## Commands
 
-If you run:
-
-```bash
-poly-readme translate --lang ko
-```
-
-Your `README.md` will be translated to Korean and saved as `README_KO.md`.
+- `poly-readme install` - Configure OpenAI API key
+- `poly-readme setup` - Configure project settings
+- `poly-readme translate` - Translate README files
+- `poly-readme help [command]` - Show help information
 
 ## Contributing
 
@@ -70,4 +98,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgments
 
-- This tool uses OpenAI's GPT-3.5-turbo model for translations
+- This tool uses OpenAI's GPT-4 model for translations
